@@ -37,6 +37,7 @@ async function connectDB() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       content TEXT,
       username TEXT,
+      room VARCHAR(255),
       timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`
   );
@@ -50,23 +51,35 @@ connectDB().catch(err => {
 io.on('connection', (socket) => {
   console.log('a user connected');
 
-  db.execute('SELECT id, content, username, timestamp FROM messages ORDER BY id DESC LIMIT 50')
-    .then(([rows]) => {
-      rows.reverse().forEach((message) => {
-        socket.emit('chat message', { content: message.content, id: message.id.toString(), username: message.username, timestamp: message.timestamp });
-      });
-    })
-    .catch(e => console.error('Error retrieving messages from database', e));
-
-  socket.on('chat message', async ({ content, username }) => {
+  socket.on('join room', async (roomName) => {
+    socket.join(roomName);
+    console.log(`${socket.id} joined room ${roomName}`);
     try {
-      const [result] = await db.execute('INSERT INTO messages (content, username) VALUES (?, ?)', [content, username]);
+      const [rows] = await db.execute('SELECT id, content, username, timestamp FROM messages WHERE room = ? ORDER BY timestamp DESC LIMIT 50', [roomName]);
+      const messages = rows.reverse();
+      messages.forEach((message) => {
+        socket.emit('chat message', message);
+      });
+    } catch (e) {
+      console.error('Error retrieving messages from database', e);
+    }
+  });
+
+  socket.on('chat message', async ({ content, username, roomName }) => {
+    try {
+      const [result] = await db.execute('INSERT INTO messages (content, username, room) VALUES (?, ?, ?)', [content, username, roomName]);
       const messageId = result.insertId;
-      console.log('Message inserted with ID:', messageId);
-      io.emit('chat message', { content, id: messageId.toString(), username, timestamp: new Date().toISOString() });
+      const [messageInfo] = await db.execute('SELECT id, content, username, timestamp FROM messages WHERE id = ?', [messageId]);
+      console.log(`Message inserted with ID: ${messageId} in room ${roomName}`);
+      io.to(roomName).emit('chat message', messageInfo[0]);
     } catch (e) {
       console.error('Error inserting message into database', e);
     }
+  });
+
+  socket.on('leave room', (roomName) => {
+    socket.leave(roomName);
+    console.log(`${socket.id} left room ${roomName}`);
   });
 
   socket.on('disconnect', () => {
